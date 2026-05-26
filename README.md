@@ -1,411 +1,314 @@
-# boss-cli
+# Boss 自动回复 · 小白上手指南
 
-[![PyPI version](https://img.shields.io/pypi/v/kabi-boss-cli.svg)](https://pypi.org/project/kabi-boss-cli/)
-[![CI](https://github.com/jackwener/boss-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/jackwener/boss-cli/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-%3E%3D3.10-blue.svg)](https://pypi.org/project/kabi-boss-cli/)
-
-A CLI for BOSS 直聘 — search jobs, view recommendations, manage applications, chat with recruiters, **and manage candidates as a recruiter** via reverse-engineered API 🤝
-
-[English](#features) | [中文](#功能特性)
-
-## More Tools
-
-- [xiaohongshu-cli](https://github.com/jackwener/xiaohongshu-cli) — Xiaohongshu CLI for notes, search, and interactions
-- [bilibili-cli](https://github.com/jackwener/bilibili-cli) — Bilibili CLI for videos, users, and search
-- [twitter-cli](https://github.com/jackwener/twitter-cli) — Twitter/X CLI for timelines, bookmarks, and posting
-- [discord-cli](https://github.com/jackwener/discord-cli) — Discord CLI for local-first sync, search, and export
-- [tg-cli](https://github.com/jackwener/tg-cli) — Telegram CLI for local-first sync, search, and export
-- [rdt-cli](https://github.com/jackwener/rdt-cli) — Reddit CLI for feed, search, posts, and interactions
-
-## Features
-
-- 🔐 **Auth** — auto-extract browser cookies (10+ browsers), QR code login, `--cookie-source` explicit browser selection, live validation against real search APIs
-- 🔍 **Search** — jobs by keyword with city/salary/experience/degree/industry/scale/stage/job-type filters
-- ⭐ **Recommendations** — personalized job recommendations based on profile
-- 📋 **Detail & Export** — view full job details, short-index navigation (`boss show 3`), CSV/JSON export
-- 📜 **History** — browse job viewing history
-- 👤 **Profile** — view personal info, resume status
-- 📮 **Applications** — view applied jobs list
-- 📋 **Interviews** — view interview invitations
-- 💬 **Chat** — view communicated boss list
-- 🤝 **Greet** — send greetings to recruiters, single or batch (with 1.5s rate-limit delay)
-- 🏙️ **Cities** — 40+ supported cities
-- 🤖 **Agent-friendly** — structured output envelope (`{ok, schema_version, data}`), Rich output on stderr
-- 👔 **Recruiter Mode** — view posted jobs, manage candidates, chat history, export candidate data (CSV/JSON)
-
-## Installation
-
-```bash
-# Recommended: uv tool (fast, isolated)
-uv tool install kabi-boss-cli
-
-# Or: pipx
-pipx install kabi-boss-cli
-
-# Optional: YAML output support
-pip install kabi-boss-cli[yaml]
-```
-
-Upgrade to the latest version:
-
-```bash
-uv tool upgrade kabi-boss-cli
-# Or: pipx upgrade kabi-boss-cli
-```
-
-From source:
-
-```bash
-git clone git@github.com:jackwener/boss-cli.git
-cd boss-cli
-uv sync
-```
-
-## Usage
-
-```bash
-# ─── Auth ─────────────────────────────────────────
-boss login                             # Auto-detect browser cookies, fallback to QR
-boss login --cookie-source chrome      # Extract from specific browser
-boss login --qrcode                    # QR code login only
-boss status                            # Check login status (validates real search session, shows cookie names)
-boss logout                            # Clear saved cookies
-
-# ─── Search ───────────────────────────────────────
-boss search "golang"                   # Search jobs
-boss search "Python" --city 杭州       # Filter by city
-boss search "Java" --salary 20-30K     # Filter by salary
-boss search "前端" --exp 3-5年          # Filter by experience
-boss search "AI" --degree 硕士         # Filter by degree
-boss search "后端" --industry 互联网    # Filter by industry
-boss search "产品" --scale 1000-9999人  # Filter by company size
-boss search "数据" --stage 已上市       # Filter by funding stage
-boss search "运维" --job-type 全职      # Filter by job type
-boss search "后端" --city 深圳 -p 2    # Pagination
-
-# ─── Detail & Export ──────────────────────────────
-boss show 3                            # View job #3 from last search
-boss detail <securityId>               # View full job details
-boss detail <securityId> --json        # JSON output (with schema envelope)
-boss export "Python" -n 50 -o jobs.csv # Export search results to CSV
-boss export "golang" --format json -o jobs.json  # Export as JSON
-
-# ─── Recommendations ──────────────────────────────
-boss recommend                         # View recommended jobs
-boss recommend -p 2 --json             # Next page, JSON output
-
-# ─── Personal Center ─────────────────────────────
-boss me                                # View profile
-boss me --json                         # JSON output
-boss applied                           # View applied jobs
-boss interviews                        # View interview invitations
-boss history                           # View browsing history
-boss chat                              # View communicated bosses
-
-# ─── Greet ────────────────────────────────────────
-boss greet <securityId>                # Send greeting to a boss
-boss greet <securityId> --json         # JSON result
-boss batch-greet "golang" --city 杭州 -n 5          # Batch greet top 5
-boss batch-greet "Python" --salary 20-30K --dry-run  # Preview only
-
-# ─── Utilities ────────────────────────────────────
-boss cities                            # List supported cities
-boss --version                         # Show version
-boss -v search "Python"                # Verbose logging (request timing)
-```
-
-## Recruiter Mode (雇主端)
-
-If you are an employer on BOSS直聘, these commands let you manage candidates from the terminal:
-
-```bash
-# ─── Search & Discover (搜索 & 发现) ─────────────
-boss recruiter search "golang" --city 深圳 --exp 3-5年    # Search candidates
-boss recruiter recommend                                    # Recommended candidates
-boss recruiter recommend --job <encryptJobId>               # Switch to different 岗位
-boss recruiter recommend -p 2                               # Next page
-
-# ─── Greet & Communicate (沟通) ──────────────────
-boss recruiter greet <encryptGeekId>                        # Initiate chat with candidate
-boss recruiter batch-view "Python" --city 杭州 -n 10       # Batch view top 10 (triggers "viewed" notice)
-boss recruiter inbox                                        # View candidate messages
-boss recruiter inbox --job <encryptJobId> -p 2              # Filter by job, page 2
-boss recruiter reply <friendId> "感谢您的关注..."            # Reply to candidate
-boss recruiter chat <friendId>                              # View chat history
-
-# ─── Chat Actions (沟通页操作) ───────────────────
-boss recruiter request-resume <friendId> --yes              # 求简历
-boss recruiter exchange-phone <friendId> --yes              # 换电话
-boss recruiter exchange-wechat <friendId> --yes             # 换微信
-boss recruiter invite-interview <geekId> --job <id>         # 约面试
-boss recruiter mark-unsuitable <geekId> --job <id>          # 不合适
-
-# ─── Resume (简历) ───────────────────────────────
-boss recruiter resume <encryptGeekId>                       # View full resume in terminal
-boss recruiter resume-download <id> --job <jobId>           # Download resume as Markdown
-boss recruiter geek <encryptGeekId> --job-id 526908510      # Quick candidate info
-
-# ─── Job Management (职位管理) ───────────────────
-boss recruiter jobs                                         # List your posted jobs
-boss recruiter job-close <encryptJobId> --yes               # Take job offline
-boss recruiter job-reopen <encryptJobId> --yes              # Bring job back online
-
-# ─── Export & Tags ───────────────────────────────
-boss recruiter labels                                       # View candidate tags
-boss recruiter export -o candidates.csv                     # Export to CSV
-boss recruiter export --format json -o out.json             # Export to JSON
-```
-
-### Recruiter Workflow Example
-
-```bash
-# 1. Check your posted jobs
-boss recruiter jobs
-
-# 2. Browse recommended candidates for a specific job
-boss recruiter recommend --job f806096ea327cd610nZ80t21FVNQ
-
-# 3. Search for specific skills
-boss recruiter search "golang" --city 深圳
-
-# 4. View a candidate's full resume
-boss recruiter resume <encryptGeekId> --job <encryptJobId>
-
-# 5. Download resume for offline review
-boss recruiter resume-download <encryptGeekId> --job <encryptJobId>
-
-# 6. Start a conversation
-boss recruiter greet <encryptGeekId>
-
-# 7. Check inbox and reply
-boss recruiter inbox -p 1
-boss recruiter reply <friendId> "感谢您的关注，方便电话聊聊吗？"
-
-# 8. Export all candidates
-boss recruiter export --format json -o candidates.json
-```
-
-## Structured Output
-
-All commands with `--json` / `--yaml` use a unified output envelope (see [SCHEMA.md](./SCHEMA.md)):
-
-```json
-{
-  "ok": true,
-  "schema_version": "1",
-  "data": { ... }
-}
-```
-
-- **Non-TTY stdout** → auto YAML (agent-friendly)
-- **`--json`** → explicit JSON
-- **Rich output** → stderr (won't pollute pipes: `boss search X --json | jq .data`)
-
-## Authentication
-
-boss-cli supports multiple authentication methods:
-
-1. **Saved cookies** — loads from `~/.config/boss-cli/credential.json`
-2. **Browser cookies** — auto-detects installed browsers (Chrome, Firefox, Edge, Brave, Arc, Chromium, Opera, Vivaldi, Safari, LibreWolf)
-3. **QR code login** — terminal QR output using Unicode half-blocks, scan with Boss 直聘 APP
-
-`boss login` auto-extracts browser cookies first, falls back to QR login. Use `--cookie-source chrome` to specify a browser, or `--qrcode` to skip browser detection. The command now verifies the saved credential against a real authenticated API before reporting success.
-
-`boss recommend` follows the live web app's current recommendation data source and request context, which improves compatibility when the legacy recommendation endpoint is rejected.
-
-`boss status --json` now reports per-flow health such as `search_authenticated` and `recommend_authenticated`, which helps diagnose partial-session issues. To avoid turning repeated checks into their own anti-bot problem, health snapshots are cached briefly in-memory.
-
-### Cookie TTL & Auto-Refresh
-
-Saved cookies auto-refresh from browser after **7 days**. If browser refresh fails, falls back to stale cookies and logs a warning.
-
-## Rate Limiting & Anti-Detection
-
-- **Gaussian jitter**: request delays with `random.gauss(0.3, 0.15)`
-- **Random long pauses**: 5% chance of 2-5s pause to mimic reading
-- **Rate-limit auto-cooldown**: code=9 triggers exponential backoff (10s→20s→40s→60s) + request delay doubling
-- **Exponential backoff**: auto-retry on HTTP 429/5xx (max 3 retries)
-- **Response cookie merge**: `Set-Cookie` headers merged back into session
-- **HTML redirect detection**: catches auth redirects to login page
-- **Browser fingerprint**: macOS Chrome 145 UA, `sec-ch-ua`, `DNT`, `Priority` headers
-- **Request logging**: `boss -v` shows request URLs, status codes, and timing
-
-## Use as AI Agent Skill
-
-boss-cli ships with a [`SKILL.md`](./SKILL.md) that teaches AI agents how to use it.
-
-### [Skills CLI](https://github.com/vercel-labs/skills) (Recommended)
-
-```bash
-npx skills add jackwener/boss-cli
-```
-
-| Flag | Description |
-| --- | --- |
-| `-g` | Install globally (user-level, shared across projects) |
-| `-a claude-code` | Target a specific agent |
-| `-y` | Non-interactive mode |
-
-### Manual Install
-
-```bash
-mkdir -p .agents/skills
-git clone git@github.com:jackwener/boss-cli.git .agents/skills/boss-cli
-```
-
-### ~~OpenClaw / ClawHub~~ (Deprecated)
-
-> ⚠️ ClawHub install method is deprecated and no longer supported. Use [Skills CLI](#skills-cli-recommended) or Manual Install above.
-
-## Project Structure
-
-```text
-boss_cli/
-├── __init__.py           # Package version
-├── cli.py                # Click entry point (lightweight, add_command only)
-├── client.py             # API client (rate-limit, cooldown, retry, anti-detection)
-├── auth.py               # Authentication (10+ browsers, QR login, TTL refresh)
-├── constants.py          # URLs, headers (Chrome 145), city codes, filter enums
-├── exceptions.py         # Structured exceptions (BossApiError hierarchy)
-├── index_cache.py        # Short-index cache for `boss show`
-└── commands/
-    ├── _common.py        # SCHEMA envelope, handle_command, stderr console
-    ├── auth.py           # login (--cookie-source/--qrcode), logout, status, me
-    ├── search.py         # search, recommend, detail, show, export, history, cities
-    ├── personal.py       # applied, interviews
-    ├── social.py         # chat, greet (--json), batch-greet (1.5s delay)
-    └── recruiter.py      # recruiter-jobs, inbox, geek, chat, labels, export
-```
-
-## Development
-
-```bash
-# Install dependencies
-uv sync
-
-# Run tests
-uv run pytest tests/ -v
-
-# Smoke tests (need cookies)
-uv run pytest tests/ -v -m smoke
-
-# Lint
-uv run ruff check .
-```
-
-## Troubleshooting
-
-**Q: `boss status` says not authenticated but local cookies still exist**
-
-`boss status` now verifies the session against a real search API. If `authenticated=false`, your local credential file exists but the underlying web session is no longer usable.
-
-**Q: `环境异常 (__zp_stoken__ 已过期)`**
-
-Your session cookies have expired. Run `boss logout && boss login` to refresh. If QR login only returns a partial cookie set, log in from a browser first and then run `boss login`.
-
-**Q: `暂无投递记录` but I have applied**
-
-Some features require fresh `__zp_stoken__`. Try re-logging in from a browser, then `boss login`.
-
-**Q: Search returns no results**
-
-Check your city filter. Some keywords are city-specific. Use `boss cities` to see available cities.
+让 AI 助手（Codex / Claude / Workbuddy 等桌面端）替你自动回复 Boss 直聘候选人的第一条消息，比如"好的，麻烦发份简历"。
 
 ---
 
-## 功能特性
+## 这个工具能做什么 / 不能做什么
 
-- 🔐 **认证** — 自动提取浏览器 Cookie（10+ 浏览器），二维码扫码登录，`--cookie-source` 指定浏览器
-- 🔍 **搜索** — 按关键词搜索职位，支持城市/薪资/经验/学历/行业/规模/融资阶段/职位类型筛选
-- ⭐ **推荐** — 基于求职期望的个性化推荐
-- 📋 **详情 & 导出** — 职位详情，编号导航 (`boss show 3`)，CSV/JSON 导出
-- 📜 **历史** — 查看浏览历史
-- 👤 **个人** — 查看个人资料
-- 📮 **投递** — 查看已投递职位列表
-- 📋 **面试** — 查看面试邀请
-- 💬 **沟通** — 查看沟通过的 Boss 列表
-- 🤝 **打招呼** — 向 Boss 打招呼/投递，支持批量操作（内置 1.5s 防风控延迟）
-- 🏙️ **城市** — 40+ 城市支持
-- 🤖 **Agent 友好** — 结构化输出 envelope，Rich 输出走 stderr
-- 👔 **招聘方模式** — 查看职位、候选人管理、聊天记录、导出候选人数据 (CSV/JSON)
+**✅ 能做**
+- 列出"等你回复"的候选人（候选人主动打招呼且你还没回过的）
+- 按你预设的模板池随机回一句
+- 在 AI agent 里用大白话调用："看下有谁等我回复，帮我都回了"
 
-## 使用示例
+**❌ 不能做**
+- 主动给陌生候选人打招呼（Boss 风控屏蔽，不要做）
+- 替你做面试决策、要电话微信（这些要你亲自来）
 
-```bash
-# 认证
-boss login                             # 自动提取浏览器 Cookie，失败则二维码
-boss login --cookie-source chrome      # 指定浏览器
-boss status                            # 检查登录状态
-boss logout                            # 清除 Cookie
+**⚠️ 你必须知道**
+- Boss 用户协议禁止自动化脚本，账号有被风控的风险
+- 第一次用建议拿小号试，不要直接上公司主账号
+- 默认只在工作时间（9:30-12:00 / 14:00-19:00）跑，每天最多 80 条
 
-# 搜索 & 详情
-boss search "golang" --city 杭州       # 按城市搜索
-boss search "AI" --industry 互联网 --scale 1000-9999人  # 行业+规模
-boss search "数据" --stage 已上市 --salary 30-50K       # 融资+薪资
-boss show 3                            # 按编号查看详情
-boss detail <securityId> --json        # 指定 ID 查看（JSON envelope）
-boss export "Python" -n 50 -o jobs.csv # 导出 CSV
+---
 
-# 推荐 & 历史
-boss recommend                         # 个性化推荐
-boss history                           # 浏览历史
+## 第 0 步：准备环境（一次性，10 分钟）
 
-# 个人中心
-boss me --json                         # 个人资料（JSON）
-boss applied                           # 已投递
-boss interviews                        # 面试邀请
-boss chat                              # 沟通列表
+你需要 Mac 或 Linux。Windows 也能跑但步骤略不同，本文以 Mac 为例。
 
-# 打招呼
-boss greet <securityId> --json         # 单个打招呼
-boss batch-greet "golang" -n 10        # 批量打招呼
-boss batch-greet "golang" --dry-run    # 预览
-
-# 工具
-boss cities                            # 城市列表
-boss -v search "Python"                # 详细日志
-```
-
-## 招聘方模式
+打开 **终端**（Terminal app），逐条复制粘贴：
 
 ```bash
-# 搜索 & 推荐
-boss recruiter search "golang" --city 深圳 --exp 3-5年
-boss recruiter recommend --job <encryptJobId>  # 按岗位查看推荐牛人
-boss recruiter recommend -p 2                  # 翻页
+# 1. 装 Homebrew（如果你已经有了，跳过）
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
-# 沟通
-boss recruiter greet <encryptGeekId>           # 向候选人打招呼
-boss recruiter batch-view "Python" -n 10       # 批量查看 (触发被查看通知)
-boss recruiter inbox -p 1                      # 查看候选人消息
-boss recruiter reply <friendId> "您好..."       # 回复候选人
+# 2. 装 uv（Python 包管理器）
+brew install uv
 
-# 沟通页操作
-boss recruiter request-resume <friendId>       # 求简历
-boss recruiter exchange-phone <friendId>       # 换电话
-boss recruiter exchange-wechat <friendId>      # 换微信
-boss recruiter invite-interview <id> --job <id> # 约面试
-boss recruiter mark-unsuitable <id> --job <id>  # 不合适
+# 3. 装 gh（GitHub 命令行，用来下载代码）
+brew install gh
 
-# 简历
-boss recruiter resume <encryptGeekId>          # 终端查看简历
-boss recruiter resume-download <id> --job <id> # 下载简历为 Markdown
-
-# 职位管理
-boss recruiter jobs                            # 查看招聘职位
-boss recruiter job-close <encryptJobId>        # 关闭职位
-boss recruiter job-reopen <encryptJobId>       # 重新开启
-
-# 导出
-boss recruiter labels                          # 查看标签
-boss recruiter export -o candidates.csv        # 导出候选人
+# 4. 登录 GitHub
+gh auth login
+# 按提示选 GitHub.com → HTTPS → Login with a web browser，把屏幕上的 8 位码贴到浏览器
 ```
 
-## 常见问题
+验证：
 
-- `环境异常` — Cookie 过期，执行 `boss logout && boss login` 刷新
-- 搜索无结果 — 检查城市筛选或关键词，使用 `boss cities` 查看支持的城市
+```bash
+uv --version    # 应该显示 uv 0.x.x
+gh auth status  # 应该显示 ✓ Logged in
+```
 
-## License
+---
 
-Apache-2.0
+## 第 1 步：下载并安装工具（3 分钟）
+
+```bash
+# 下载到 ~/dev 目录（没有的话会自动建）
+mkdir -p ~/dev
+cd ~/dev
+gh repo clone ARMANDSnow/boss-cli
+cd boss-cli
+
+# 创建虚拟环境并安装
+uv venv --python 3.12
+source .venv/bin/activate
+uv pip install -e ".[mcp,yaml]"
+```
+
+验证：
+
+```bash
+boss --version           # 应该显示 boss, version 0.x.x
+which boss-cli-mcp       # 应该显示 .../boss-cli/.venv/bin/boss-cli-mcp
+```
+
+把这一行的输出**记下来**，等会儿配 Codex 要用：
+
+```bash
+echo "$(pwd)/.venv/bin/boss-cli-mcp"
+# 例如输出：/Users/dingyuxuan/dev/boss-cli/.venv/bin/boss-cli-mcp
+```
+
+---
+
+## 第 2 步：登录 Boss 直聘（2 分钟）
+
+```bash
+boss login
+```
+
+终端会弹出一个二维码——用 **Boss 直聘手机 App** 扫码确认。成功后会显示 `✅ 已登录`。
+
+> 如果你已经在 Chrome 里登录过 Boss 网页版，可以直接 `boss login`，工具会自动从浏览器导 cookie，不用扫码。
+
+验证：
+
+```bash
+boss status              # 应该显示用户名和已登录状态
+boss recruiter jobs      # 应该列出你的在招职位
+```
+
+---
+
+## 第 3 步：写你的回复模板（3 分钟）
+
+```bash
+mkdir -p ~/.config/boss-cli
+cp ~/dev/boss-cli/templates.txt.example ~/.config/boss-cli/templates.txt
+open -e ~/.config/boss-cli/templates.txt   # 用文本编辑器打开
+```
+
+把里面的模板改成**你平时的口吻**，比如：
+
+```
+你好，方便发一份最新的简历吗？
+你好，麻烦发份完整简历，我看完跟你约时间细聊
+Hi，可以先把简历发我看看吗？
+你好{name}，看完你打的招呼觉得挺合适，先发份简历过来呗
+你好，简历方便先发一份吗？看完咱们详细聊
+```
+
+**规则**：
+- 一行一条，`#` 开头是注释
+- `{name}` 会自动替换为候选人姓名
+- **至少写 8 条**（少了风控会觉得你像机器）
+- **不要写**微信号、电话号、链接（Boss 会秒删消息）
+
+存盘后验证：
+
+```bash
+boss recruiter templates       # 应该列出你写的所有模板
+```
+
+---
+
+## 第 4 步：在终端试跑一次（2 分钟）
+
+```bash
+# 看看现在有谁等你回复（不发任何东西）
+boss recruiter pending
+
+# 干跑：显示"会发什么"但不真发
+boss recruiter auto-reply --dry-run --max-send 3
+```
+
+如果输出看着对，再真发一次：
+
+```bash
+boss recruiter auto-reply --max-send 3
+# 它会让你按 y 确认，回 3 条之间各间隔 12-30 秒
+```
+
+去 Boss 直聘 App 看消息列表——应该已经回出去了。✅
+
+---
+
+## 第 5 步：接到 Codex 桌面端（5 分钟）
+
+### 方法 A：通过 GUI 添加（推荐）
+
+1. 打开 **Codex 桌面 App**
+2. 左下角点 **Settings**（设置）
+3. 左边栏点 **MCP servers**
+4. 点 **+ Add server**
+5. 填：
+   - **Name**: `boss`
+   - **Type**: `STDIO`（默认就是）
+   - **Command**: 粘贴第 1 步末尾让你记下的那个绝对路径，比如 `/Users/dingyuxuan/dev/boss-cli/.venv/bin/boss-cli-mcp`
+   - **Args**: 留空
+   - **Env**: 留空
+6. 点 **Save**
+7. **重启 Codex**
+
+### 方法 B：直接改配置文件
+
+```bash
+mkdir -p ~/.codex
+open -e ~/.codex/config.toml
+```
+
+在文件末尾追加（把 `command` 换成你的真实路径）：
+
+```toml
+[mcp_servers.boss]
+command = "/Users/dingyuxuan/dev/boss-cli/.venv/bin/boss-cli-mcp"
+```
+
+存盘，**重启 Codex**。
+
+### 验证
+
+在 Codex 对话框里说：
+
+> 你能用 boss 这个 MCP 看下我有哪些工具吗？
+
+Codex 应该列出 `list_pending` / `auto_reply` / `list_templates` / `add_template` / `reset_templates` 这 5 个。
+
+---
+
+## 第 6 步：在 Codex 里实际使用
+
+直接用大白话指挥 Codex，例如：
+
+> 看下 boss 现在有几个候选人等我回复，先列出来给我看。
+
+Codex 会调 `list_pending`，告诉你"有 7 个人等你回复"。然后你说：
+
+> 帮我都回了，先 dry_run 看下会发什么。
+
+Codex 会调 `auto_reply(dry_run=true)`，把"打算给谁发什么"的清单返回。你看完说：
+
+> 可以，真发出去。
+
+Codex 会调 `auto_reply(dry_run=false)`，按节奏一条条发。
+
+**几个常用指令模板**：
+
+| 你想做的事 | 跟 Codex 说 |
+|---|---|
+| 看待回复名单 | "看下 boss 有几个等回复的" |
+| 干跑预览 | "boss 帮我自动回，先 dry run" |
+| 真实发送 | "确认发出去" |
+| 只针对某个职位 | "只看 encryptJobId 是 xxx 的候选人，帮我回了" |
+| 加新模板 | "给 boss 模板池加一条：'你好，简历方便发下吗'" |
+| 看现有模板 | "boss 现在有哪些模板？" |
+
+---
+
+## 第 7 步（可选）：接到其他 agent
+
+### Claude Code (Anthropic)
+
+```bash
+claude mcp add boss /Users/dingyuxuan/dev/boss-cli/.venv/bin/boss-cli-mcp
+```
+
+### Claude Desktop App
+
+编辑 `~/Library/Application Support/Claude/claude_desktop_config.json`，加：
+
+```json
+{
+  "mcpServers": {
+    "boss": {
+      "command": "/Users/dingyuxuan/dev/boss-cli/.venv/bin/boss-cli-mcp"
+    }
+  }
+}
+```
+
+重启 Claude Desktop。
+
+### Workbuddy 或其他 MCP 客户端
+
+通用规则：让客户端启动 `boss-cli-mcp` 命令，使用 **stdio** 协议。具体配在哪个文件、哪个菜单，请查该 app 自己的 MCP 文档关键词："**add MCP server**" 或 "**stdio command**"。基本上都是填一个 Name + 一个绝对路径，跟上面 Codex 的方法 A 是一回事。
+
+---
+
+## 故障排查
+
+### "未登录" / 候选人列表是空的
+```bash
+boss logout && boss login    # 重新扫码
+```
+
+### Codex 找不到 boss 这个 MCP
+- 确认配的是**绝对路径**（`/Users/.../boss-cli-mcp`），不是 `boss-cli-mcp`
+- 重启 Codex（不是关窗口，要完全 Quit 再开）
+- 在终端跑一遍 `boss-cli-mcp`，立即 Ctrl+C；如果没报错说明命令本身没坏
+
+### 发消息时报 "code 9" / "需要 stoken"
+账号被风控了。**立刻停止 24 小时**，不要重试。下次：
+- 模板池再扩到 15 条以上
+- `--max-send 3` 之类小批量分多次跑
+- 错峰时段（避开 9 点整、10 点整这种太规整的时间）
+
+### 不在工作时间报错
+工具默认只在 9:30-12:00 / 14:00-19:00 跑。强行跑加 `--ignore-hours`，但不推荐——非工作时间发消息正是风控的重点信号。
+
+### 想改默认上限/时段
+编辑 `~/dev/boss-cli/boss_cli/auto_reply.py`，搜 `WORK_HOURS` / `DEFAULT_DAILY_QUOTA` / `SEND_DELAY_MIN`。改完不用重装。
+
+---
+
+## 安全和审计
+
+每发一条消息都写一行到 `~/.config/boss-cli/auto_reply_audit.jsonl`。出问题时回看：
+
+```bash
+tail -20 ~/.config/boss-cli/auto_reply_audit.jsonl
+```
+
+今日已用配额：
+
+```bash
+cat ~/.config/boss-cli/auto_reply_quota.json
+```
+
+---
+
+## 一句话总结
+
+```
+boss login            # 一次性
+boss recruiter pending           # 看谁等你
+boss recruiter auto-reply -y     # 帮你回
+```
+
+或在 Codex 里说："boss 看下有谁等我回，帮我都回了"。
+
+---
+
+> 本项目 fork 自 [jackwener/boss-cli](https://github.com/jackwener/boss-cli)，在原有 CLI 基础上加了 HR 自动回复 + MCP server 能力。完整的求职者端 / 招聘方其他命令请看 [README_UPSTREAM.md](README_UPSTREAM.md)。
