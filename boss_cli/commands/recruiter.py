@@ -12,6 +12,14 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
+from ..auto_reply import (
+    DEFAULT_DAILY_QUOTA,
+    TEMPLATES_PATH,
+    is_within_work_hours,
+    list_pending,
+    load_templates,
+    run_auto_reply,
+)
 from ..client import BossClient, resolve_city
 from ..constants import DEGREE_CODES, EXP_CODES, SALARY_CODES
 from ..exceptions import BossApiError
@@ -446,6 +454,161 @@ def recruiter_reply(friend_id: int, message: str, yes: bool, as_json: bool, as_y
         console.print(f"[green]消息已发送 -> friendId={friend_id}[/green]")
 
     handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml)
+
+
+# ── recruiter pending ─────────────────────────────────────────────
+
+
+@recruiter.command("pending")
+@click.option("--job", "enc_job_id", default="", help="按职位 encryptJobId 筛选")
+@click.option("--no-strict", is_flag=True, help="只按 label 筛选, 跳过聊天记录二次核对 (更快但可能误判)")
+@structured_output_options
+def recruiter_pending(enc_job_id: str, no_strict: bool, as_json: bool, as_yaml: bool) -> None:
+    """列出"等我回复"的候选人 (label=新招呼 且 我未回过)"""
+    cred = require_auth()
+
+    def _action(c: BossClient) -> list[dict]:
+        items = list_pending(c, enc_job_id=enc_job_id, strict_check=not no_strict)
+        return [
+            {
+                "friend_id": p.friend_id, "uid": p.uid, "name": p.name,
+                "job_name": p.job_name, "last_text": p.last_text, "last_time": p.last_time,
+            }
+            for p in items
+        ]
+
+    def _render(data: list[dict]) -> None:
+        if not data:
+            console.print("[yellow]当前没有需要自动回复的候选人[/yellow]")
+            return
+        table = Table(title=f"等待回复的候选人 ({len(data)} 人)", show_lines=True)
+        table.add_column("#", style="dim", width=3)
+        table.add_column("friendId", style="dim", max_width=12)
+        table.add_column("候选人", style="bold cyan", max_width=12)
+        table.add_column("职位", style="green", max_width=20)
+        table.add_column("最近消息", style="dim", max_width=30)
+        table.add_column("时间", style="dim", max_width=10)
+        for i, c in enumerate(data, 1):
+            table.add_row(
+                str(i), str(c["friend_id"]), c["name"], c["job_name"],
+                (c["last_text"] or "-")[:28], c["last_time"],
+            )
+        console.print(table)
+        console.print("  [dim]发送: boss recruiter auto-reply  (加 --dry-run 预览)[/dim]")
+
+    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml)
+
+
+# ── recruiter auto-reply ──────────────────────────────────────────
+
+
+@recruiter.command("auto-reply")
+@click.option("--job", "enc_job_id", default="", help="按职位 encryptJobId 筛选")
+@click.option("--dry-run", is_flag=True, help="仅打印计划, 不真发")
+@click.option("--ignore-hours", is_flag=True, help="跳过工作时段闸门 (不推荐)")
+@click.option("--limit", "daily_limit", default=DEFAULT_DAILY_QUOTA, type=int, help=f"今日发送上限 (默认: {DEFAULT_DAILY_QUOTA})")
+@click.option("--max-send", default=None, type=int, help="本次最多发送 N 条")
+@click.option("--no-strict", is_flag=True, help="跳过聊天记录二次核对")
+@click.option("-y", "--yes", is_flag=True, help="跳过确认提示")
+@structured_output_options
+def recruiter_auto_reply(
+    enc_job_id: str, dry_run: bool, ignore_hours: bool,
+    daily_limit: int, max_send: int | None, no_strict: bool,
+    yes: bool, as_json: bool, as_yaml: bool,
+) -> None:
+    """对"等我回复"的候选人按模板池随机回一句
+
+    模板从 ~/.config/boss-cli/templates.txt 读 (不存在则用内置 5 条)。
+    默认带工作时段闸门、打字延迟、12-30s 发送间隔、每日 80 条上限。
+    """
+    cred = require_auth()
+    templates = load_templates()
+    structured = as_json or as_yaml
+
+    if not ignore_hours and not is_within_work_hours():
+        console.print(
+            "[yellow]当前不在工作时段 (默认 09:30-12:00 / 14:00-19:00)。"
+            "如需强制跑加 --ignore-hours。[/yellow]"
+        )
+        if not structured:
+            raise SystemExit(2)
+
+    candidates = run_client_action(
+        cred,
+        lambda c: list_pending(c, enc_job_id=enc_job_id, strict_check=not no_strict),
+    )
+
+    if not candidates:
+        console.print("[green]没有等待回复的新候选人[/green]")
+        return
+
+    # Preview
+    if not structured:
+        table = Table(title=f"将自动回复 {len(candidates)} 人 (模板池 {len(templates)} 条)")
+        table.add_column("#", style="dim", width=3)
+        table.add_column("候选人", style="cyan", max_width=12)
+        table.add_column("职位", style="green", max_width=20)
+        table.add_column("候选人首句", style="dim", max_width=30)
+        for i, c in enumerate(candidates, 1):
+            table.add_row(str(i), c.name, c.job_name, (c.last_text or "-")[:28])
+        console.print(table)
+
+    if not yes and not dry_run and not structured:
+        if not click.confirm(f"\n确认对 {len(candidates)} 人逐一自动回复?"):
+            console.print("[dim]已取消[/dim]")
+            return
+
+    report = run_client_action(
+        cred,
+        lambda c: run_auto_reply(
+            c, candidates, templates,
+            daily_limit=daily_limit, dry_run=dry_run,
+            ignore_hours=ignore_hours, max_send=max_send,
+        ),
+    )
+
+    if structured:
+        # Structured envelope is auto-handled by handle_command, but we're not
+        # using it here (custom flow), so emit JSON directly when asked.
+        import json as _json
+        click.echo(_json.dumps(
+            {"ok": True, "schema_version": "1", "data": report.summary()},
+            ensure_ascii=False, indent=2,
+        ))
+        return
+
+    console.print(
+        f"\n[bold]完成: 已发 {len(report.sent)} 条 / 跳过 {len(report.skipped)} 条 / "
+        f"今日剩余配额 {report.quota_after}[/bold]"
+    )
+    for r in report.skipped:
+        console.print(f"  [yellow]跳过 {r.name} (friendId={r.friend_id}): {r.skipped_reason or r.error}[/yellow]")
+
+
+# ── recruiter templates ──────────────────────────────────────────
+
+
+@recruiter.command("templates")
+@click.option("--add", default=None, help="追加一条模板")
+@click.option("--reset", is_flag=True, help="重置为内置模板池")
+def recruiter_templates(add: str | None, reset: bool) -> None:
+    """查看/编辑自动回复模板池 (~/.config/boss-cli/templates.txt)"""
+    from ..auto_reply import save_templates, DEFAULT_TEMPLATES
+
+    if reset:
+        save_templates(list(DEFAULT_TEMPLATES))
+        console.print(f"[green]已重置 -> {TEMPLATES_PATH}[/green]")
+        return
+
+    templates = load_templates()
+    if add:
+        templates.append(add)
+        save_templates(templates)
+        console.print(f"[green]已追加, 当前共 {len(templates)} 条[/green]")
+
+    console.print(f"[bold]模板池[/bold] ({TEMPLATES_PATH})")
+    for i, t in enumerate(templates, 1):
+        console.print(f"  {i}. {t}")
 
 
 # ── recruiter export ──────────────────────────────────────────────

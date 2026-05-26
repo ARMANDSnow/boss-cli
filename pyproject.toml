@@ -33,6 +33,9 @@ yaml = [
 browser = [
     "camoufox>=0.4",
 ]
+mcp = [
+    "mcp>=1.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/jackwener/boss-cli"
@@ -41,6 +44,7 @@ Issues = "https://github.com/jackwener/boss-cli/issues"
 
 [project.scripts]
 boss = "boss_cli.cli:cli"
+boss-cli-mcp = "boss_cli.mcp_server:main"
 
 [build-system]
 requires = ["hatchling"]
