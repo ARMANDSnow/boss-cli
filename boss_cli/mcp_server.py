@@ -4,6 +4,7 @@ Tools exposed:
 - list_pending      — show candidates waiting for first recruiter reply
 - auto_reply        — send a templated reply to each pending candidate
                       (defaults to dry_run=True; agent must pass dry_run=False to actually send)
+- pacing_status     — inspect current pulse state + intraday intensity
 - list_templates    — read current template pool
 - add_template      — append a template to the pool
 - reset_templates   — restore the built-in template pool
@@ -25,6 +26,7 @@ from .auto_reply import (
     is_within_work_hours,
     list_pending,
     load_templates,
+    pacing_snapshot,
     run_auto_reply,
     save_templates,
 )
@@ -64,6 +66,7 @@ def _auto_reply_impl(
     daily_limit: int = DEFAULT_DAILY_QUOTA,
     max_send: int | None = None,
     strict_check: bool = True,
+    respect_pacing: bool = True,
 ) -> dict:
     cred = _require_credential()
     templates = load_templates()
@@ -77,8 +80,13 @@ def _auto_reply_impl(
             c, candidates, templates,
             daily_limit=daily_limit, dry_run=dry_run,
             ignore_hours=ignore_hours, max_send=max_send,
+            respect_pacing=respect_pacing, enc_job_id=enc_job_id,
         )
     return report.summary()
+
+
+def _pacing_status_impl() -> dict:
+    return pacing_snapshot()
 
 
 def _list_templates_impl() -> dict:
@@ -131,9 +139,11 @@ def _build_server():
             Tool(
                 name="auto_reply",
                 description=(
-                    "对每个 pending 候选人按模板池随机回一句。"
-                    "默认 dry_run=True (只返回计划不真发)。调用方应先 dry_run 给用户看, 用户同意后再 dry_run=False。"
-                    "已内置工作时段闸门 (09:30-12:00 / 14:00-19:00)、每日 80 条上限、12-30s 发送间隔、打字延迟。"
+                    "对 pending 候选人按模板池随机回一句。"
+                    "默认 dry_run=True (只返回计划不真发); 默认 respect_pacing=True (单次调用最多发 1 条, "
+                    "由 pulse 节奏决定; 适合 agent 每 10 分钟周期触发)。"
+                    "已内置: 看人再回 (view+history+8-25s 阅读停顿)、burst+rest pulse 节奏 (3-5 条/簇, 15-40min 休息)、"
+                    "时段强度曲线 (09:30-19:00, 午休 12:00-13:30 硬静默)、每日 80 条上限、打字延迟、code=9 熔断。"
                 ),
                 inputSchema={
                     "type": "object",
@@ -141,6 +151,9 @@ def _build_server():
                         "enc_job_id": {"type": "string", "description": "可选: 按职位 encryptJobId 过滤"},
                         "dry_run": {"type": "boolean", "default": True,
                                     "description": "true=只规划不真发 (默认), false=真实发送"},
+                        "respect_pacing": {"type": "boolean", "default": True,
+                                           "description": "true (默认) = 单次调用至多发 1 条, 由 pulse 节奏决定;"
+                                                          " false = 批量发, 内部 sleep 数小时直到全部发完"},
                         "ignore_hours": {"type": "boolean", "default": False,
                                          "description": "跳过工作时段闸门 (不推荐)"},
                         "daily_limit": {"type": "integer", "default": DEFAULT_DAILY_QUOTA,
@@ -150,6 +163,14 @@ def _build_server():
                         "strict_check": {"type": "boolean", "default": True},
                     },
                 },
+            ),
+            Tool(
+                name="pacing_status",
+                description=(
+                    "查看当前 pulse 节奏状态: 工作强度 (0=静默, 1=峰值)、当前 burst 进度、距下次可发还有几秒、"
+                    "下一步动作 (send/wait/rest/silent) 及原因。agent 用 auto_reply 被 skip 时调这个看为什么。"
+                ),
+                inputSchema={"type": "object", "properties": {}},
             ),
             Tool(
                 name="list_templates",
@@ -182,6 +203,8 @@ def _build_server():
                 result = _list_pending_impl(**arguments)
             elif name == "auto_reply":
                 result = _auto_reply_impl(**arguments)
+            elif name == "pacing_status":
+                result = _pacing_status_impl()
             elif name == "list_templates":
                 result = _list_templates_impl()
             elif name == "add_template":

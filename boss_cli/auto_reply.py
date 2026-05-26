@@ -12,10 +12,19 @@ import logging
 import random
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, time as dtime
+from datetime import datetime
 from pathlib import Path
 
 from .client import BossClient
+from .pacing import (
+    PaceState,
+    load_pace_state,
+    next_action,
+    reading_pause_seconds,
+    record_send,
+    save_pace_state,
+    work_intensity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,19 +41,9 @@ DEFAULT_TEMPLATES = [
     "你好，先看下简历哈，麻烦发一下～",
 ]
 
-# Inter-send delay range (seconds). Floor is what really matters for risk.
-SEND_DELAY_MIN = 12.0
-SEND_DELAY_MAX = 30.0
-
 # Typing-speed model: roughly N chars/sec, plus jitter.
 TYPING_CHARS_PER_SEC = 6.0
 TYPING_JITTER = 1.5
-
-# Work-hours gate (local time). Outside this range auto-reply refuses to run.
-WORK_HOURS = [
-    (dtime(9, 30), dtime(12, 0)),
-    (dtime(14, 0), dtime(19, 0)),
-]
 
 DEFAULT_DAILY_QUOTA = 80
 
@@ -129,8 +128,13 @@ def save_quota(q: DailyQuota) -> None:
 
 
 def is_within_work_hours(now: datetime | None = None) -> bool:
-    t = (now or datetime.now()).time()
-    return any(start <= t <= end for start, end in WORK_HOURS)
+    """Backwards-compatible wrapper: true iff current intensity is > 0.
+
+    The actual intraday curve lives in `pacing.work_intensity`; this function
+    just acts as a hard binary gate for callers that don't care about the
+    underlying intensity (e.g. CLI's early-exit check).
+    """
+    return work_intensity(now) > 0.0
 
 
 # ── Eligibility check ───────────────────────────────────────────────
@@ -144,6 +148,8 @@ class PendingCandidate:
     job_name: str
     last_text: str
     last_time: str
+    encrypt_friend_id: str = ""   # for view_geek (the candidate's encryptGeekId)
+    job_id: int = 0               # for view_geek context
 
 
 def list_pending(client: BossClient, enc_job_id: str = "", strict_check: bool = True) -> list[PendingCandidate]:
@@ -204,8 +210,68 @@ def list_pending(client: BossClient, enc_job_id: str = "", strict_check: bool = 
             job_name=detail.get("jobName", ""),
             last_text=last_text,
             last_time=msg_info.get("lastTime", detail.get("lastTime", "")),
+            encrypt_friend_id=detail.get("encryptFriendId", ""),
+            job_id=detail.get("jobId", 0),
         ))
     return out
+
+
+# ── Browse simulation (look like a real HR opening the candidate) ────
+
+
+@dataclass
+class BrowseTraces:
+    view_ts: str = ""
+    read_ts: str = ""
+
+
+def pre_reply_browse(
+    client: BossClient,
+    candidate: PendingCandidate,
+    enc_job_id: str = "",
+    sleep_fn=time.sleep,
+) -> BrowseTraces:
+    """Open the candidate's resume + read chat history, then pause "reading".
+
+    Mimics how a real HR uses the web UI: click candidate → resume opens → eyes
+    on screen for several seconds → switch to chat tab → start typing. Returns
+    timestamps of the two API calls for audit. Failures are non-fatal — we
+    return whatever succeeded so the reply can still go.
+    """
+    traces = BrowseTraces()
+
+    # 1) View resume — best-effort. Needs encrypt_friend_id; pick the best job id.
+    if candidate.encrypt_friend_id:
+        job_eid = enc_job_id
+        if not job_eid:
+            # Fall back to whatever job the candidate is tied to
+            try:
+                jobs = client.get_boss_chatted_jobs()
+                if jobs:
+                    job_eid = jobs[0].get("encryptJobId", "")
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("chatted_jobs lookup failed: %s", exc)
+        if job_eid:
+            try:
+                client.get_boss_view_geek(
+                    encrypt_geek_id=candidate.encrypt_friend_id,
+                    encrypt_job_id=job_eid,
+                )
+                traces.view_ts = datetime.now().isoformat(timespec="seconds")
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("view_geek failed for friendId=%s: %s", candidate.friend_id, exc)
+
+    # 2) Reading pause — the most "human" part of the whole sequence
+    sleep_fn(reading_pause_seconds())
+
+    # 3) Read recent chat — natural before replying
+    try:
+        client.get_boss_chat_history(gid=candidate.friend_id, count=10)
+        traces.read_ts = datetime.now().isoformat(timespec="seconds")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("chat_history failed for friendId=%s: %s", candidate.friend_id, exc)
+
+    return traces
 
 
 # ── Send loop with throttling ───────────────────────────────────────
@@ -219,6 +285,7 @@ class SendResult:
     ok: bool
     error: str = ""
     skipped_reason: str = ""
+    burst_position: str = ""
 
 
 @dataclass
@@ -227,6 +294,8 @@ class AutoReplyReport:
     skipped: list[SendResult] = field(default_factory=list)
     quota_after: int = 0
     dry_run: bool = False
+    pace_intensity: float = 0.0
+    pace_next_wait_seconds: float = 0.0
 
     def summary(self) -> dict:
         return {
@@ -234,18 +303,24 @@ class AutoReplyReport:
             "skipped_count": len(self.skipped),
             "quota_remaining": self.quota_after,
             "dry_run": self.dry_run,
-            "sent": [{"friend_id": r.friend_id, "name": r.name, "message": r.message} for r in self.sent],
-            "skipped": [{"friend_id": r.friend_id, "name": r.name, "reason": r.skipped_reason or r.error} for r in self.skipped],
+            "pace_intensity": round(self.pace_intensity, 2),
+            "pace_next_wait_seconds": round(self.pace_next_wait_seconds, 1),
+            "sent": [
+                {"friend_id": r.friend_id, "name": r.name, "message": r.message,
+                 "burst_position": r.burst_position}
+                for r in self.sent
+            ],
+            "skipped": [
+                {"friend_id": r.friend_id, "name": r.name,
+                 "reason": r.skipped_reason or r.error}
+                for r in self.skipped
+            ],
         }
 
 
 def _typing_delay(text: str) -> float:
     base = len(text) / TYPING_CHARS_PER_SEC
     return max(0.5, base + random.uniform(0, TYPING_JITTER))
-
-
-def _inter_send_delay() -> float:
-    return random.uniform(SEND_DELAY_MIN, SEND_DELAY_MAX)
 
 
 def run_auto_reply(
@@ -257,27 +332,37 @@ def run_auto_reply(
     dry_run: bool = False,
     ignore_hours: bool = False,
     max_send: int | None = None,
+    respect_pacing: bool = False,
     sleep_fn=time.sleep,
+    enc_job_id: str = "",
 ) -> AutoReplyReport:
     """Send a templated first reply to each pending candidate.
 
-    Returns a report with sent/skipped breakdown. Honors daily quota and
-    work-hours gate; dry_run skips the actual send but still returns the
-    full plan so the agent can show it to the user.
+    Two flow modes:
+    - respect_pacing=False (CLI batch): walk the candidate list; for each, if
+      the pacing state says "wait" / "rest", sleep that long then re-check.
+      Sends are spaced by burst/rest gaps from `pacing.next_action`. Can run
+      for hours; use --max-send to bound.
+    - respect_pacing=True (MCP/cron tick): at most ONE send per invocation.
+      If pacing state says wait/rest/silent, skip immediately and report why
+      so the caller can come back later. Recommended cadence: every 10 min.
     """
     report = AutoReplyReport(dry_run=dry_run)
+    intensity = work_intensity()
+    report.pace_intensity = intensity
 
-    if not ignore_hours and not is_within_work_hours():
+    if not ignore_hours and intensity <= 0.0:
         for c in candidates:
             report.skipped.append(SendResult(
                 friend_id=c.friend_id, name=c.name, message="",
-                ok=False, skipped_reason="outside work hours (09:30-12:00 / 14:00-19:00)",
+                ok=False, skipped_reason="outside work-intensity window (lunch / off-hours)",
             ))
         return report
 
     quota = load_quota(limit=daily_limit)
+    pace_state = load_pace_state()
 
-    for idx, c in enumerate(candidates):
+    for c in candidates:
         if max_send is not None and len(report.sent) >= max_send:
             report.skipped.append(SendResult(
                 friend_id=c.friend_id, name=c.name, message="",
@@ -291,13 +376,63 @@ def run_auto_reply(
             ))
             continue
 
+        # Pacing gate — decide whether we may send right now
+        action = next_action(pace_state, intensity)
+
+        if action.action == "silent":
+            report.skipped.append(SendResult(
+                friend_id=c.friend_id, name=c.name, message="",
+                ok=False, skipped_reason=action.reason,
+            ))
+            break  # silent slot applies to all remaining candidates
+
+        if action.action in ("wait", "rest"):
+            if respect_pacing:
+                report.skipped.append(SendResult(
+                    friend_id=c.friend_id, name=c.name, message="",
+                    ok=False, skipped_reason=f"{action.action} ({action.reason})",
+                ))
+                report.pace_next_wait_seconds = action.wait_seconds
+                # In tick mode, one decision per invocation — return now
+                save_pace_state(pace_state)
+                report.quota_after = quota.remaining()
+                return report
+            else:
+                # Batch mode: actually sleep, then re-evaluate this same candidate
+                logger.info("pacing %s: sleeping %.0fs (%s)",
+                            action.action, action.wait_seconds, action.reason)
+                sleep_fn(action.wait_seconds)
+                # Re-check eligibility (intensity may have flipped to 0 mid-sleep)
+                intensity = work_intensity()
+                if intensity <= 0.0:
+                    report.skipped.append(SendResult(
+                        friend_id=c.friend_id, name=c.name, message="",
+                        ok=False, skipped_reason="entered silent slot mid-batch",
+                    ))
+                    break
+                action = next_action(pace_state, intensity)
+                if action.action != "send":
+                    # Shouldn't happen normally, but be defensive
+                    report.skipped.append(SendResult(
+                        friend_id=c.friend_id, name=c.name, message="",
+                        ok=False, skipped_reason=f"unexpected post-sleep {action.action}",
+                    ))
+                    continue
+
+        # action == "send"
         msg = pick_template(templates, candidate_name=c.name)
 
         if dry_run:
-            report.sent.append(SendResult(friend_id=c.friend_id, name=c.name, message=msg, ok=True))
+            report.sent.append(SendResult(
+                friend_id=c.friend_id, name=c.name, message=msg, ok=True,
+                burst_position=action.burst_position,
+            ))
+            # In dry-run, advance pace_state too so the printed plan is realistic
+            record_send(pace_state, intensity)
             continue
 
-        # Pre-send pacing: simulate reading + typing the message
+        # Real send: browse → read pause → typing → send
+        traces = pre_reply_browse(client, c, enc_job_id=enc_job_id, sleep_fn=sleep_fn)
         sleep_fn(_typing_delay(msg))
 
         try:
@@ -311,6 +446,9 @@ def run_auto_reply(
                 "ts": datetime.now().isoformat(timespec="seconds"),
                 "friend_id": c.friend_id, "name": c.name,
                 "message": msg, "ok": False, "error": str(exc),
+                "view_ts": traces.view_ts, "read_ts": traces.read_ts,
+                "intensity": round(intensity, 2),
+                "burst_position": action.burst_position,
             })
             # Stop the batch on suspected rate-limit/risk-control
             if "code" in str(exc).lower() or "stoken" in str(exc).lower():
@@ -320,19 +458,44 @@ def run_auto_reply(
 
         quota.consume(1)
         save_quota(quota)
-        report.sent.append(SendResult(friend_id=c.friend_id, name=c.name, message=msg, ok=True))
+        record_send(pace_state, intensity)
+        save_pace_state(pace_state)
+        report.sent.append(SendResult(
+            friend_id=c.friend_id, name=c.name, message=msg, ok=True,
+            burst_position=action.burst_position,
+        ))
         _audit({
             "ts": datetime.now().isoformat(timespec="seconds"),
             "friend_id": c.friend_id, "name": c.name,
             "message": msg, "ok": True,
+            "view_ts": traces.view_ts, "read_ts": traces.read_ts,
+            "intensity": round(intensity, 2),
+            "burst_position": action.burst_position,
         })
 
-        # Inter-send gap (skip after the last one)
-        if idx + 1 < len(candidates):
-            sleep_fn(_inter_send_delay())
+        if respect_pacing:
+            # Single-send tick: stop after one successful send
+            report.pace_next_wait_seconds = max(0.0, pace_state.next_eligible_ts - time.time())
+            break
 
+    save_pace_state(pace_state)
     report.quota_after = quota.remaining()
     return report
+
+
+def pacing_snapshot() -> dict:
+    """Convenience: return current pace state + intensity for status display."""
+    state = load_pace_state()
+    intensity = work_intensity()
+    action = next_action(state, intensity)
+    return {
+        "intensity": round(intensity, 2),
+        "burst_count": state.burst_count,
+        "burst_target": state.burst_target,
+        "next_eligible_in_seconds": max(0.0, state.next_eligible_ts - time.time()),
+        "action": action.action,
+        "reason": action.reason,
+    }
 
 
 def _audit(entry: dict) -> None:

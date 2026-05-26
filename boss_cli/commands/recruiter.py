@@ -18,6 +18,7 @@ from ..auto_reply import (
     is_within_work_hours,
     list_pending,
     load_templates,
+    pacing_snapshot,
     run_auto_reply,
 )
 from ..client import BossClient, resolve_city
@@ -509,17 +510,20 @@ def recruiter_pending(enc_job_id: str, no_strict: bool, as_json: bool, as_yaml: 
 @click.option("--limit", "daily_limit", default=DEFAULT_DAILY_QUOTA, type=int, help=f"今日发送上限 (默认: {DEFAULT_DAILY_QUOTA})")
 @click.option("--max-send", default=None, type=int, help="本次最多发送 N 条")
 @click.option("--no-strict", is_flag=True, help="跳过聊天记录二次核对")
+@click.option("--respect-pacing/--batch", default=False,
+              help="--respect-pacing: 单次只发 1 条 (适合配 cron 周期触发); --batch (默认): 内部 sleep 跑完整批")
 @click.option("-y", "--yes", is_flag=True, help="跳过确认提示")
 @structured_output_options
 def recruiter_auto_reply(
     enc_job_id: str, dry_run: bool, ignore_hours: bool,
     daily_limit: int, max_send: int | None, no_strict: bool,
-    yes: bool, as_json: bool, as_yaml: bool,
+    respect_pacing: bool, yes: bool, as_json: bool, as_yaml: bool,
 ) -> None:
     """对"等我回复"的候选人按模板池随机回一句
 
     模板从 ~/.config/boss-cli/templates.txt 读 (不存在则用内置 5 条)。
-    默认带工作时段闸门、打字延迟、12-30s 发送间隔、每日 80 条上限。
+    内置: 看人再回 (view + history + 8-25s 阅读)、pulse 节奏 (3-5 条/簇 + 15-40min 休息)、
+    时段强度曲线 (午休 12:00-13:30 硬静默)、打字延迟、每日 80 条上限。
     """
     cred = require_auth()
     templates = load_templates()
@@ -527,7 +531,7 @@ def recruiter_auto_reply(
 
     if not ignore_hours and not is_within_work_hours():
         console.print(
-            "[yellow]当前不在工作时段 (默认 09:30-12:00 / 14:00-19:00)。"
+            "[yellow]当前不在工作时段 (默认 09:30-12:00 / 14:00-19:00, 午休 12-13:30 硬静默)。"
             "如需强制跑加 --ignore-hours。[/yellow]"
         )
         if not structured:
@@ -552,6 +556,10 @@ def recruiter_auto_reply(
         for i, c in enumerate(candidates, 1):
             table.add_row(str(i), c.name, c.job_name, (c.last_text or "-")[:28])
         console.print(table)
+        if respect_pacing:
+            console.print("  [dim]--respect-pacing: 本次至多发 1 条, 之后请再次运行 (或交给 cron)[/dim]")
+        else:
+            console.print("  [dim]--batch (默认): 内部按 pulse 节奏 sleep, 可能跑数小时; 用 --max-send N 切短[/dim]")
 
     if not yes and not dry_run and not structured:
         if not click.confirm(f"\n确认对 {len(candidates)} 人逐一自动回复?"):
@@ -564,6 +572,7 @@ def recruiter_auto_reply(
             c, candidates, templates,
             daily_limit=daily_limit, dry_run=dry_run,
             ignore_hours=ignore_hours, max_send=max_send,
+            respect_pacing=respect_pacing, enc_job_id=enc_job_id,
         ),
     )
 
@@ -583,6 +592,34 @@ def recruiter_auto_reply(
     )
     for r in report.skipped:
         console.print(f"  [yellow]跳过 {r.name} (friendId={r.friend_id}): {r.skipped_reason or r.error}[/yellow]")
+
+
+# ── recruiter pacing-status ───────────────────────────────────────
+
+
+@recruiter.command("pacing-status")
+@structured_output_options
+def recruiter_pacing_status(as_json: bool, as_yaml: bool) -> None:
+    """查看当前 pulse 节奏: 工作强度 / 当前 burst 进度 / 距下次可发还有几秒"""
+    snap = pacing_snapshot()
+    if as_json or as_yaml:
+        import json as _json
+        click.echo(_json.dumps({"ok": True, "schema_version": "1", "data": snap},
+                               ensure_ascii=False, indent=2))
+        return
+    intensity = snap["intensity"]
+    bar = "█" * int(intensity * 20) + "·" * (20 - int(intensity * 20))
+    console.print(f"[bold]工作强度[/bold]  {intensity:.2f}  [{bar}]")
+    console.print(f"[bold]当前动作[/bold]  {snap['action']}  ({snap['reason']})")
+    console.print(f"[bold]Burst 进度[/bold] {snap['burst_count']}/{snap['burst_target']}")
+    wait = snap["next_eligible_in_seconds"]
+    if wait > 0:
+        if wait > 60:
+            console.print(f"[bold]下次可发[/bold]  {wait/60:.1f} 分钟后")
+        else:
+            console.print(f"[bold]下次可发[/bold]  {wait:.0f} 秒后")
+    else:
+        console.print("[bold green]现在就可发[/bold green]")
 
 
 # ── recruiter templates ──────────────────────────────────────────

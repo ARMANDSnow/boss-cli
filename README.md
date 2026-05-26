@@ -279,13 +279,67 @@ boss logout && boss login    # 重新扫码
 工具默认只在 9:30-12:00 / 14:00-19:00 跑。强行跑加 `--ignore-hours`，但不推荐——非工作时间发消息正是风控的重点信号。
 
 ### 想改默认上限/时段
-编辑 `~/dev/boss-cli/boss_cli/auto_reply.py`，搜 `WORK_HOURS` / `DEFAULT_DAILY_QUOTA` / `SEND_DELAY_MIN`。改完不用重装。
+- 改时段曲线：编辑 `boss_cli/pacing.py` 的 `INTENSITY_CURVE`
+- 改每日上限：编辑 `boss_cli/auto_reply.py` 的 `DEFAULT_DAILY_QUOTA`，或 CLI 加 `--limit N`
+- 改 burst 大小/间隔：编辑 `boss_cli/pacing.py` 的 `BURST_MIN/MAX`、`INTRA_BURST_SEC`、`REST_GAP_SEC`
+
+改完不用重装。
+
+---
+
+## 进阶：Pulse 节奏 + 看人再回（默认全开）
+
+为了让调用模式像真人 HR，工具内置了两层「行为真实度」：
+
+### 1. 看人再回（pre_reply_browse）
+
+每发一条消息前，自动按这个顺序：
+```
+打开候选人简历 (view_geek)
+  ↓ 8-25 秒"读简历"停顿
+拉聊天记录 (chat_history)
+  ↓ 按消息长度的"打字"延迟
+发消息 (boss_send_message)
+```
+让 Boss 后端看到完整的「浏览-阅读-回复」调用图谱，而非孤立 send。
+
+### 2. Pulse 节奏（替代固定间隔）
+
+不再是固定 12-30s，而是「3-5 条一个 burst → 15-40 分钟休息 → 再 burst」，并按时段强度自动伸缩：
+- 09:30-10:30 / 13:30-14:30：缓冲（强度 0.4-0.5，间隔自动放大）
+- 10:30-12:00 / 14:30-16:30：峰值（强度 1.0）
+- **12:00-13:30：硬静默**（不发任何消息，HR 也吃午饭）
+- 16:30-19:00：尾段（强度 0.3-0.7）
+
+查看当前节奏状态：
+```bash
+boss recruiter pacing-status
+# 输出：工作强度、当前 burst 进度、距下次可发还有几秒、下一步动作
+```
+
+### 两种发送模式
+
+**`--batch`（CLI 默认）**：单次调用按 pulse 内置 sleep 跑完整批。可能跑数小时。配 `--max-send 5` 切短。
+
+**`--respect-pacing`（MCP 默认）**：单次调用最多发 1 条。如果当前在 cooldown / rest / 午休，立即返回并告诉 agent 等多久。**推荐配 cron / agent 调度器每 10 分钟触发一次**：
+
+```bash
+# crontab：每工作日 9:30-19:00 每 10 分钟触发
+*/10 9-18 * * 1-5  cd ~/dev/boss-cli && source .venv/bin/activate && boss recruiter auto-reply --respect-pacing -y >> /tmp/boss-auto.log 2>&1
+```
+
+或者直接在 Codex 里说："以后每 10 分钟帮我跑一次 boss 的 auto_reply"，让 agent 自己定时。
 
 ---
 
 ## 安全和审计
 
-每发一条消息都写一行到 `~/.config/boss-cli/auto_reply_audit.jsonl`。出问题时回看：
+每发一条消息都写一行到 `~/.config/boss-cli/auto_reply_audit.jsonl`，字段：
+- `ts` / `view_ts` / `read_ts` —— 三步调用的时刻（用来验证「浏览-阅读-回复」链路完整）
+- `intensity` —— 发送瞬间的工作强度（0.3-1.0）
+- `burst_position` —— "3/5" 表示当前 burst 第 3 条共 5 条
+
+出问题时回看：
 
 ```bash
 tail -20 ~/.config/boss-cli/auto_reply_audit.jsonl
@@ -295,6 +349,12 @@ tail -20 ~/.config/boss-cli/auto_reply_audit.jsonl
 
 ```bash
 cat ~/.config/boss-cli/auto_reply_quota.json
+```
+
+Pulse 状态（cross-invocation 持久化）：
+
+```bash
+cat ~/.config/boss-cli/session_state.json
 ```
 
 ---
